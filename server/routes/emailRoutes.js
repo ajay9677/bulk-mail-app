@@ -1,19 +1,41 @@
 const express = require("express");
-const nodemailer = require("nodemailer");
 const mongoose = require("mongoose");
+const { google } = require("googleapis");
 const Email = require("../models/Email");
 
 const router = express.Router();
 
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD
-  }
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI
+);
+
+oauth2Client.setCredentials({
+  refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
 });
 
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const gmail = google.gmail({
+  version: "v1",
+  auth: oauth2Client,
+});
+
+function encodeEmail(to, subject, body) {
+  const message = [
+    `From: ${process.env.GMAIL_USER}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    body,
+  ].join("\r\n");
+
+  return Buffer.from(message)
+    .toString("base64url");
+}
 
 // Send bulk email
 router.post("/send", async (req, res) => {
@@ -28,12 +50,14 @@ router.post("/send", async (req, res) => {
     recipients.length === 0
   ) {
     return res.status(400).json({
-      message: "Subject, body and recipients are required."
+      message: "Subject, body and recipients are required.",
     });
   }
 
   const cleanRecipients = recipients.map((email) =>
-    typeof email === "string" ? email.trim().toLowerCase() : ""
+    typeof email === "string"
+      ? email.trim().toLowerCase()
+      : ""
   );
 
   if (
@@ -41,7 +65,7 @@ router.post("/send", async (req, res) => {
     cleanRecipients.some((email) => !emailPattern.test(email))
   ) {
     return res.status(400).json({
-      message: "Enter valid email addresses (maximum 50 recipients)."
+      message: "Enter valid email addresses (maximum 50).",
     });
   }
 
@@ -49,7 +73,7 @@ router.post("/send", async (req, res) => {
 
   if (mongoose.connection.readyState !== 1) {
     return res.status(503).json({
-      message: "Database is not connected."
+      message: "Database is not connected.",
     });
   }
 
@@ -60,31 +84,39 @@ router.post("/send", async (req, res) => {
       subject: subject.trim(),
       body: body.trim(),
       recipients: uniqueRecipients,
-      status: "pending"
+      status: "pending",
     });
   } catch (error) {
-    console.error("Could not save email record:", error.message);
+    console.error("Database error:", error.message);
+
     return res.status(500).json({
-      message: "Could not save the email record."
+      message: "Could not save email history.",
     });
   }
 
   let sentCount = 0;
   const errors = [];
 
-  // Send separately so recipients do not see each other's addresses.
   for (const recipient of uniqueRecipients) {
     try {
-      await transporter.sendMail({
-        from: process.env.GMAIL_USER,
-        to: recipient,
-        subject: subject.trim(),
-        text: body.trim()
+      await gmail.users.messages.send({
+        userId: "me",
+        requestBody: {
+          raw: encodeEmail(
+            recipient,
+            subject.trim(),
+            body.trim()
+          ),
+        },
       });
 
       sentCount++;
     } catch (error) {
-      console.error(`Email attempt failed for ${recipient}:`, error.message);
+      console.error(
+        "Gmail API send failed:",
+        error.message
+      );
+
       errors.push(`Failed to send to ${recipient}.`);
     }
   }
@@ -94,6 +126,7 @@ router.post("/send", async (req, res) => {
   record.sentCount = sentCount;
   record.failedCount = failedCount;
   record.errors = errors;
+
   record.status =
     failedCount === 0
       ? "sent"
@@ -104,27 +137,22 @@ router.post("/send", async (req, res) => {
   try {
     await record.save();
   } catch (error) {
-    console.error("Could not update email history:", error.message);
+    console.error("History update failed:", error.message);
 
     return res.status(500).json({
-      message: "Sending attempts finished, but history could not be updated.",
+      message: "Email attempts finished, but history update failed.",
       sentCount,
-      failedCount
+      failedCount,
     });
   }
 
-  return res.status(200).json({
-    message:
-      failedCount === 0
-        ? "All email sending requests completed successfully."
-        : sentCount === 0
-          ? "All email sending requests failed."
-          : "Some email sending requests succeeded and others failed.",
+  return res.json({
+    message: "Email sending process completed.",
     status: record.status,
     total: uniqueRecipients.length,
     sentCount,
     failedCount,
-    historyId: record._id
+    historyId: record._id,
   });
 });
 
@@ -137,12 +165,12 @@ router.get("/history", async (req, res) => {
       .limit(100)
       .lean();
 
-    res.json(history);
+    return res.json(history);
   } catch (error) {
     console.error("History error:", error.message);
 
-    res.status(500).json({
-      message: "Could not fetch email history."
+    return res.status(500).json({
+      message: "Could not fetch email history.",
     });
   }
 });
