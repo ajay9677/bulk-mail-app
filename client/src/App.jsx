@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import "./App.css";
 
-const API = "http://localhost:5000/api/emails";
+const API_URL = import.meta.env.VITE_API_URL;
+
+const API = `${API_URL}/api/emails`;
 
 function App() {
   const [page, setPage] = useState("compose");
@@ -33,6 +35,19 @@ function App() {
       setMessageType("error");
     }
   };
+
+
+  useEffect(() => {
+  axios
+    .get(API)
+    .then((response) => {
+      console.log("API Response:", response.data);
+      setHistory(response.data);
+    })
+    .catch((error) => {
+      console.error("API Error:", error.message);
+    });
+}, []);
 
   useEffect(() => {
     fetchHistory();
