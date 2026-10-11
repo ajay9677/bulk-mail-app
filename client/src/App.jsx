@@ -3,7 +3,7 @@ import axios from "axios";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-const API = `${API_URL}/api/emails`;
+const API = `${API_URL}/emails`;
 
 
 function App() {
